@@ -1,0 +1,8 @@
+__title__ = 'tooey'
+__version__ = '0.1.0'
+__description__ = 'Automatically turn script arguments into an interactive terminal interface'
+__author__ = 'Simon Robinson'
+__author_email__ = 'simon@robinson.ac'
+__url__ = 'https://github.com/simonrob/tooey'
+__copyright__ = 'Copyright (c) 2023 Simon Robinson'
+__license__ = 'Apache 2.0'
