@@ -66,5 +66,14 @@ $ FORCE_TOOEY=1 python tooey_example.py val1 --named-choices 1 3 | sort
 ```
 
 
+## Testing
+To run the Tooey tests and generate a coverage report, first clone this repository and open the `tests` directory in a terminal, then:
+
+```console
+python -m coverage run -m unittest
+python -m coverage html --include '*/tooey/*' --omit '*test*'
+```
+
+
 ## License
 [Apache 2.0](https://github.com/simonrob/tooey/blob/main/LICENSE)

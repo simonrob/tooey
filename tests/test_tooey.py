@@ -389,7 +389,7 @@ class TestTooey(unittest.TestCase):
              None),
 
             (Argument('--choice-0b', type=int, choices=range(1, 6), help='_StoreAction; choices 1-5'),
-             ['abc', '1'],
+             ['abc', '6', '1'],
              1),
 
             (Argument('--choice-1', nargs=1, type=int, choices=range(1, 6),
