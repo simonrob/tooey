@@ -3,6 +3,8 @@ Tooey: Gooey, but for TUIs
 Decorate your argparse function with `@Tooey` to be prompted interactively in the terminal to enter each argument
 """
 import argparse
+import contextlib
+import functools
 import os
 import sys
 
@@ -10,9 +12,12 @@ import sys
 from argparse import (
     ArgumentParser,
 
+    # we ignore these action types currently
     _HelpAction,
     _VersionAction,
+    _SubParsersAction,
 
+    # we support these action types
     _StoreConstAction,
     _StoreTrueAction,
     _StoreFalseAction,
@@ -27,11 +32,10 @@ _YES_CHOICES = ('y', 'yes')
 _YES_CHOICES_STRING = ' / '.join(_YES_CHOICES)
 
 
-class Tooey(object):
-    def __init__(self, f):
-        self.f = f
-
-    def __call__(self, *args, **kwargs):
+# noinspection PyPep8Naming
+def Tooey(f=None):
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
         ArgumentParser.original_parse_args = ArgumentParser.parse_args
         ArgumentParser.original_error = ArgumentParser.error
         ArgumentParser.original_error_message = None
@@ -39,7 +43,7 @@ class Tooey(object):
         ArgumentParser.parse_args = parse_args
         ArgumentParser.error = error
 
-        result = self.f(*args, **kwargs)
+        result = f(*args, **kwargs)
 
         ArgumentParser.parse_args = ArgumentParser.original_parse_args
         ArgumentParser.error = ArgumentParser.original_error
@@ -50,12 +54,16 @@ class Tooey(object):
 
         return result
 
+    return wrapper
+
 
 def parse_args(self, args=None, namespace=None):
-    self.add_argument('--ignore-tooey', action='store_true', help=argparse.SUPPRESS)
-    self.add_argument('--force-tooey', action='store_true', help=argparse.SUPPRESS)
+    with contextlib.suppress(argparse.ArgumentError):  # ignore if these have already been defined by the base function
+        self.add_argument('--ignore-tooey', action='store_true', help=argparse.SUPPRESS)
+        self.add_argument('--force-tooey', action='store_true', help=argparse.SUPPRESS)
     parsed_args = self.original_parse_args(args, namespace)
 
+    # handle environment variables and tooey-related arguments - if both are set, do not proceed with Tooey
     ignore_tooey = parsed_args.ignore_tooey or os.environ.get('IGNORE_TOOEY')
     force_tooey = parsed_args.force_tooey or os.environ.get('FORCE_TOOEY')
     if ignore_tooey and force_tooey:
@@ -74,9 +82,22 @@ def parse_args(self, args=None, namespace=None):
 
     try:
         # we have to use the parser's internal _actions object because there is no other way to get an action's details
+        # first, save the initial values to check what _was_ provided at runtime, skipping help and version actions
+        # because they don't require input, and doing this step separately to option parsing itself because multiple
+        # options can share the same `dest`, so the original value could have been updated before we get to it
+        initial_values = {}
+        ignored_actions = (_HelpAction, _VersionAction, _SubParsersAction)
         for action in self._actions:
-            if type(action) in (_HelpAction, _VersionAction):
-                continue  # these actions do not request user input
+            action_type = type(action)
+            if action_type not in ignored_actions:
+                initial_values[action.dest] = parsed_args.__dict__[action.dest]
+            elif action_type not in (_HelpAction, _VersionAction):
+                # TODO: we print an error, but don't handle these args at all, so any real argparse errors will be
+                #  suppressed - best to drop back to standard argparse if any of these arguments are found?
+                print('\nTooey warning: action type', action_type.__name__, 'is not currently handled - skipping')
+
+        # then, iterate over the available options, gathering any additions via user input
+        for action in filter(lambda a: type(a) not in ignored_actions, self._actions):
 
             option_string = ', '.join(action.option_strings) if action.option_strings else action.dest
             current_value = parsed_args.__dict__[action.dest]
@@ -85,20 +106,13 @@ def parse_args(self, args=None, namespace=None):
             print('Argument:', option_string, '(required)' if action.required else '')
             print('Help text:', action.help)
 
-            if current_value not in (action.default, []) and type(action) is not _AppendConstAction:
+            if initial_values[action.dest] not in (action.default, []) and type(action) is not _AppendConstAction:
                 # note: currently all `append_const` actions are shown even if some are provided at runtime
                 # we don't exclude these because the intent may be to provide them multiple times
                 print('Skipping interactive mode for argument provided at runtime (value: %s)' % current_value)
                 continue
 
-            new_value = _parse_action(action, current_value)
-
-            if isinstance(parsed_args.__dict__[action.dest], list):  # lists should be extended rather than replaced
-                if new_value:
-                    parsed_args.__dict__[action.dest] = list(set(current_value + new_value))
-            else:
-                parsed_args.__dict__[action.dest] = new_value
-
+            parsed_args.__dict__[action.dest] = _parse_action(action, current_value)
             print('Outcome:', action.dest, 'is `%s`' % parsed_args.__dict__[action.dest])
 
         print('\nTooey interactive mode completed - continuing script')
@@ -113,6 +127,18 @@ def parse_args(self, args=None, namespace=None):
             self.original_error(self.original_error_message)
 
 
+def get_input(prompt='', strip=False):
+    print(prompt, end=' ')
+    response = input()
+    if not response:  # testing can produce an actual `None` where real input would only lead to an empty string
+        response = ''
+    if strip:
+        response = response.strip()
+    if 'unittest' in sys.modules:
+        print(response)
+    return response
+
+
 def _parse_action(action, current_value):
     action_type = type(action)
 
@@ -122,18 +148,16 @@ def _parse_action(action, current_value):
         if action.required:
             print('Skipping interactive mode for required action - the only possible value is `%s`' % yes_response)
             return yes_response
-        print('Enter %s to set to `%s`, or anything else to accept the default value (`%s`): ' % (
-            _YES_CHOICES_STRING, yes_response, action.default))
-        response = input().strip()
+        response = get_input(prompt='Enter %s to set to `%s`, or anything else to accept the default value (`%s`):' % (
+            _YES_CHOICES_STRING, yes_response, action.default), strip=True)
         return yes_response if response in _YES_CHOICES else action.default
 
     elif action_type is _AppendConstAction:
         # this action type appends a constant value each time it is provided
         new_value = current_value if current_value else []
         while True:
-            print('Enter %s to append `%s` to the current value of `%s`, or anything else to skip: ' % (
-                _YES_CHOICES_STRING, action.const, new_value))
-            response = input().strip()
+            response = get_input(prompt='Enter %s to append `%s` to the current value of `%s`, or anything else to '
+                                        'skip:' % (_YES_CHOICES_STRING, action.const, new_value), strip=True)
             if response in _YES_CHOICES:
                 new_value.extend([action.const])
             else:
@@ -160,9 +184,9 @@ def _parse_action(action, current_value):
     elif action_type is _CountAction:
         # this action provides the number of times the same argument occurs
         while True:
-            print('Enter the number of times you would like to provide this argument, or leave blank to accept the '
-                  'default value (`%s`): ' % action.default)
-            count_response = input().strip()
+            count_response = get_input(prompt='Enter the number of times you would like to provide this argument, or '
+                                              'leave blank to accept the default value (`%s`):' % action.default,
+                                       strip=True)
             if count_response.isdigit():
                 return int(count_response)
             elif not count_response:
@@ -172,25 +196,20 @@ def _parse_action(action, current_value):
         # the default action type is able to handle one or more arguments flexibly
         return _parse_store_action(action)
 
-    else:
-        print('Tooey warning: action type', action_type, 'is not currently handled - skipping')
-
-    return action.default
-
 
 def _parse_store_action(action, append=False):
     new_value = []
     arg_num = 0
-    type_string = ' of type `%s`' % action.type.__name__ if action.type else ''
+    type_string = ' of type `%s`' % (
+        action.type.__name__ if hasattr(action.type, '__name__') else action.type) if action.type else ''
     choice_list_string = (' from `%s`' % ', '.join([str(c) for c in action.choices])) if action.choices else ''
     argument_required_string = 'This argument is required but has not been provided - please enter a value'
     while True:
         while True:
-            print('Enter %s%s%s for this argument, or leave blank to skip: ' % (
+            response = get_input(prompt='Enter %s%s%s for this argument, or leave blank to skip:' % (
                 'an additional value' if append else 'a value',
                 choice_list_string if choice_list_string else type_string if type_string else '',
-                (' to append to the current value `%s`' % new_value) if len(new_value) > 0 else ''))
-            response = input()
+                (' to append to the current value `%s`' % new_value) if len(new_value) > 0 else ''), strip=False)
             if response:
                 if action.type:
                     try:
@@ -234,10 +253,14 @@ def _parse_store_action(action, append=False):
                     print(argument_required_string)
                     continue
                 if action.const:
-                    print('This argument has a constant value (`%s`) - enter %s to choose this, or leave blank to '
-                          'accept the default (`%s`): ' % (action.const, _YES_CHOICES_STRING, action.default))
-                    if input().strip() in _YES_CHOICES:
+                    response = get_input(prompt='This argument has a constant value (`%s`) - enter %s to choose this, '
+                                                'leave blank to accept the default (`%s`), or enter anything else to '
+                                                'return to the previous prompt:' % (
+                                                    action.const, _YES_CHOICES_STRING, action.default), strip=True)
+                    if response in _YES_CHOICES:
                         return action.const
+                    elif response:
+                        continue
                 return action.default
             return response
 
@@ -259,10 +282,4 @@ def _parse_store_action(action, append=False):
 
 # ArgumentParser's exit_on_error argument was added in Python 3.9; we support below this so override rather than catch
 def error(self, message):
-    force_parser = argparse.ArgumentParser(add_help=False)
-    force_parser.add_argument('--force-tooey', action='store_true')
-    force_tooey = force_parser.parse_known_args()[0].force_tooey or os.environ.get('FORCE_TOOEY')
-    if sys.stdout.isatty() or force_tooey:
-        self.original_error_message = message  # to be used on failure/cancellation
-        return
-    self.original_error(message)
+    self.original_error_message = message  # to be used on failure/cancellation
