@@ -1,6 +1,7 @@
 import argparse
 import io
 import os
+import sys
 import unittest.mock
 
 from tooey import Tooey
@@ -116,6 +117,52 @@ class TestTooey(unittest.TestCase):
             parser.parse_args()
 
         del os.environ['FORCE_TOOEY']
+
+    def test_with_gooey(self):
+        # TODO: test the Gooey integration more extensively/effectively
+        from gooey import Gooey
+
+        @Gooey
+        @Tooey
+        @unittest.mock.patch('builtins.input')
+        def tooey_with_gooey(mocked_input):
+            os.environ['FORCE_TOOEY'] = '1'
+
+            mocked_input.side_effect = ['y']
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--no-gooey')
+            args = parser.parse_args()
+
+            del os.environ['FORCE_TOOEY']
+
+            self.assertIs(args.no_gooey, 'y')
+
+        tooey_with_gooey()
+
+        with unittest.mock.patch('sys.argv', ['fake_gooey_with_tooey.py', '--ignore-gooey']):
+            @Tooey
+            @Gooey
+            @unittest.mock.patch('builtins.input')
+            def gooey_with_tooey(mocked_input):
+                os.environ['FORCE_TOOEY'] = '1'
+
+                mocked_input.side_effect = ['y']
+                parser = argparse.ArgumentParser()
+                parser.add_argument('--skipped-gooey')
+                args = parser.parse_args()
+
+                del os.environ['FORCE_TOOEY']
+
+                self.assertIs(args.skipped_gooey, 'y')
+
+            gooey_with_tooey()
+
+        sys.modules.pop('gooey')
+        del Gooey
+
+    def test_nothing_of_value_just_to_get_full_coverage(self):
+        from tooey.tooey import safe_get_namespace_boolean  # just returns false when a key is not found...
+        self.assertFalse(safe_get_namespace_boolean([argparse.Namespace()], 'fake_key'))
 
     # ------------------------------------------------------------------------------------------------------------------
 
