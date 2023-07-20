@@ -1,5 +1,5 @@
 __title__ = 'tooey'
-__version__ = '0.3.0'
+__version__ = '0.4.0'
 __description__ = 'Automatically turn script arguments into an interactive terminal interface'
 __author__ = 'Simon Robinson'
 __author_email__ = 'simon@robinson.ac'

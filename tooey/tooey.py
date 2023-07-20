@@ -4,6 +4,7 @@ Decorate your argparse function with `@Tooey` to be prompted interactively in th
 """
 import argparse
 import contextlib
+import copy
 import functools
 import os
 import sys
@@ -31,50 +32,102 @@ _SEPARATOR = '-' * 80
 _YES_CHOICES = ('y', 'yes')
 _YES_CHOICES_STRING = ' / '.join(_YES_CHOICES)
 
+_GOOEY_IGNORE_COMMAND = '--ignore-gooey'
+
 
 # noinspection PyPep8Naming
 def Tooey(f=None):
+    global_config = None
+    if 'gooey' in sys.modules:
+        # when Gooey is present we need to be able to parse arguments earlier in order to disable it if necessary, and
+        # with no ability to detect parent decorators, must assume importing Gooey means using it for *this* function
+        # note: the need to handle this in the root Tooey definition means that it will be run at launch, before the
+        # wrapped function is actually called (and multiple times if there are multiple `@Tooey` decorators used)
+        config_parser = argparse.ArgumentParser(add_help=False)
+        config_parser.add_argument('--ignore-tooey', action='store_true')
+        config_parser.add_argument('--force-tooey', action='store_true')
+        global_config, remaining_argv = config_parser.parse_known_args()
+        global_config.ignore_tooey, global_config.force_tooey = check_environment(global_config.ignore_tooey,
+                                                                                  global_config.force_tooey)
+
+        # TODO: improvable without breaking Gooey integration? E.g., via a new decorator that applies Tooey *and* Gooey?
+        sys.argv = [sys.argv[0]] + remaining_argv
+
+        if not global_config.ignore_tooey:
+            with contextlib.suppress(IndexError):
+                if _GOOEY_IGNORE_COMMAND not in sys.argv:
+                    sys.argv.append(_GOOEY_IGNORE_COMMAND)
+
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
-        ArgumentParser.original_parse_args = ArgumentParser.parse_args
-        ArgumentParser.original_error = ArgumentParser.error
-        ArgumentParser.original_error_message = None
+        ArgumentParser.tooey_original_parse_args = ArgumentParser.parse_args
+        ArgumentParser.tooey_original_error = ArgumentParser.error
+        ArgumentParser.tooey_global_config = global_config
 
         ArgumentParser.parse_args = parse_args
         ArgumentParser.error = error
 
+        if 'gooey' in sys.modules and not global_config.ignore_tooey:  # undo our Gooey modification
+            with contextlib.suppress(IndexError):
+                if sys.argv[-1] == _GOOEY_IGNORE_COMMAND:
+                    sys.argv.pop()
+
         result = f(*args, **kwargs)
 
-        ArgumentParser.parse_args = ArgumentParser.original_parse_args
-        ArgumentParser.error = ArgumentParser.original_error
-
-        del ArgumentParser.original_parse_args
-        del ArgumentParser.original_error
-        del ArgumentParser.original_error_message
+        ArgumentParser.parse_args = ArgumentParser.tooey_original_parse_args
+        ArgumentParser.error = ArgumentParser.tooey_original_error
 
         return result
 
     return wrapper
 
 
-def parse_args(self, args=None, namespace=None):
-    with contextlib.suppress(argparse.ArgumentError):  # ignore if these have already been defined by the base function
-        self.add_argument('--ignore-tooey', action='store_true', help=argparse.SUPPRESS)
-        self.add_argument('--force-tooey', action='store_true', help=argparse.SUPPRESS)
-    parsed_args = self.original_parse_args(args, namespace)
-
-    # handle environment variables and tooey-related arguments - if both are set, do not proceed with Tooey
-    ignore_tooey = parsed_args.ignore_tooey or os.environ.get('IGNORE_TOOEY')
-    force_tooey = parsed_args.force_tooey or os.environ.get('FORCE_TOOEY')
+def check_environment(ignore_tooey, force_tooey):
+    ignore_tooey = os.environ.get('IGNORE_TOOEY') or ignore_tooey
+    force_tooey = os.environ.get('FORCE_TOOEY') or force_tooey
     if ignore_tooey and force_tooey:
         force_tooey = False
-    del parsed_args.__dict__['ignore_tooey']
-    del parsed_args.__dict__['force_tooey']
-    self._actions = [a for a in self._actions if a.dest not in ('ignore_tooey', 'force_tooey')]
+    return ignore_tooey, force_tooey
 
-    if (not sys.stdout.isatty() or ignore_tooey) and not force_tooey:
-        if self.original_error_message:
-            self.original_error(self.original_error_message)
+
+def safe_get_namespace_boolean(namespaces, key):
+    for namespace in namespaces:  # for when we don't know if a store_true argument is actually present
+        if key in namespace.__dict__:
+            return namespace.__dict__[key]
+    return False
+
+
+def parse_args(self, args=None, namespace=None):
+    self.tooey_original_error_message = None
+    if hasattr(self, 'tooey_global_config') and self.tooey_global_config:
+        self.tooey_config = copy.deepcopy(self.tooey_global_config)
+    else:
+        self.tooey_config = argparse.Namespace()
+
+    if 'gooey' not in sys.modules or args is not None:
+        # called on a specified list rather than sys.argv - note: if Gooey supported this (which it currently doesn't),
+        # calling in this way would show up in the Gooey UI - perhaps not fixable until Gooey is patched?
+        with contextlib.suppress(argparse.ArgumentError):
+            self.add_argument('--ignore-tooey', action='store_true', help=argparse.SUPPRESS)
+            self.add_argument('--force-tooey', action='store_true', help=argparse.SUPPRESS)
+
+    parsed_args = self.tooey_original_parse_args(args, namespace)
+
+    # re-check environment variables - they could be set inside the patched function itself (e.g. in our own tests...)
+    self.tooey_config.ignore_tooey, self.tooey_config.force_tooey = check_environment(
+        safe_get_namespace_boolean([self.tooey_config, parsed_args], 'ignore_tooey'),
+        safe_get_namespace_boolean([self.tooey_config, parsed_args], 'force_tooey'))
+
+    if 'gooey' not in sys.modules or args is not None:
+        internal_args = ('ignore_tooey', 'force_tooey')
+        for arg in internal_args:
+            if arg in parsed_args.__dict__:
+                del parsed_args.__dict__[arg]  # TODO: if these weren't defined by us, they'll now be missing...
+        self._actions = [a for a in self._actions if a.dest not in internal_args]
+
+    if (not sys.stdout.isatty() or self.tooey_config.ignore_tooey) and not self.tooey_config.force_tooey:
+        if self.tooey_original_error_message:
+            self.tooey_original_error(self.tooey_original_error_message)
         return parsed_args
 
     print(_SEPARATOR)
@@ -123,8 +176,9 @@ def parse_args(self, args=None, namespace=None):
     except KeyboardInterrupt:
         print('\n\nTooey interactive mode interrupted - continuing script')
         print(_SEPARATOR)
-        if self.original_error_message:
-            self.original_error(self.original_error_message)
+        if self.tooey_original_error_message:
+            # TODO: continue script execution instead if inputs so far have addressed the original error?
+            self.tooey_original_error(self.tooey_original_error_message)
 
 
 def get_input(prompt='', strip=False):
@@ -135,7 +189,7 @@ def get_input(prompt='', strip=False):
     if strip:
         response = response.strip()
     if 'unittest' in sys.modules:
-        print(response)
+        print(response)  # it is useful to be able to see the actual input when testing
     return response
 
 
@@ -282,4 +336,4 @@ def _parse_store_action(action, append=False):
 
 # ArgumentParser's exit_on_error argument was added in Python 3.9; we support below this so override rather than catch
 def error(self, message):
-    self.original_error_message = message  # to be used on failure/cancellation
+    self.tooey_original_error_message = message  # to be used on failure/cancellation

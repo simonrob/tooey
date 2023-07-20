@@ -66,13 +66,46 @@ $ FORCE_TOOEY=1 python tooey_example.py val1 --named-choices 1 3 | sort
 ```
 
 
+## Using alongside Gooey
+It can be useful to decorate methods with both `@Tooey` and `@Gooey` so that scripts can be run flexibly depending on context.
+To avoid conflicts, if both decorators are present for a single method, Tooey makes sure that only one of them is active.
+Which one is chosen depends on the order in which you add their decorators, with the decorator closest to the function taking priority:
+
+```python
+@Gooey
+@Tooey
+def main_tooey():
+    # Here Tooey is activated and Gooey is ignored
+    # To force Gooey to be used instead, pass the `--ignore-tooey` command line option
+    [...]
+
+@Tooey
+@Gooey
+def main_gooey():
+    # Here Gooey is activated and Tooey is ignored
+    # To force Tooey to be used instead, pass the `--ignore-gooey` command line option
+    [...]
+```
+
+Regardless of decorator order, you can always use the command line parameters `--ignore-tooey` and `--ignore-gooey` to switch behaviour, as outlined in the example above.
+If Gooey is present (and not ignored) it will take precedence over the the `--force-tooey` parameter.
+Please note that due to the nature of Gooey's interaction with command line arguments, complex scripts with multiple Gooey decorators or unusual configurations may not be fully compatibile with this approach, and it is advisable to test your script when using both Tooey and Gooey simultaneously.
+
+
 ## Testing
 To run the Tooey tests and generate a coverage report, first clone this repository and open the `tests` directory in a terminal, then:
 
 ```console
+python -m pip install gooey
 python -m coverage run -m unittest
 python -m coverage html --include '*/tooey/*' --omit '*test*'
 ```
+
+
+## Inspirations and alternatives
+- [Gooey](https://github.com/chriskiehl/Gooey) adds a GUI interface to (almost) any script
+- [GooeyWrapper](https://github.com/skeenp/gooeywrapper) extends Gooey to make switching between the command line and Gooey a little more seamless
+- [Click](https://click.palletsprojects.com/en/8.1.x/options/#prompting) supports command line options that auto-prompt when missing
 
 
 ## License
